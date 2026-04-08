@@ -19,13 +19,13 @@ apt-get update -y && apt-get install -y wget curl unzip jq tar ca-certificates
 cd /etc/V2bX
 
 # 尝试获取最新版本号 (例如 v0.5.0)
-TAG=$(curl -s https://api.github.com/repos/Shannon-x/V2bX/releases/latest | jq -r .tag_name)
+TAG=$(curl -s https://api.github.com/repos/Shannon-x/V2bX/releases/v1.1.202604040547| jq -r .tag_name)
 
 # 如果 API 挂了或被限流，我们手动指定一个已知的稳定版（防止变量为空）
 if [ -z "$TAG" ] || [ "$TAG" == "null" ]; then
     echo "警告：GitHub API 请求失败，尝试使用硬编码地址..."
     # 你可以在这里填入一个确定的版本号，或者直接尝试 release/latest
-    DOWNLOAD_URL="https://github.com/Shannon-x/V2bX/releases/latest/download/V2bX-linux-64.zip"
+    DOWNLOAD_URL="https://github.com/Shannon-x/V2bX/releases/download/v1.1.202604040547/V2bX-linux-64.zip"
 else
     echo "检测到最新版本: $TAG"
     DOWNLOAD_URL="https://github.com/Shannon-x/V2bX/releases/download/${TAG}/V2bX-linux-64.zip"
