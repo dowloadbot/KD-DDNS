@@ -67,25 +67,7 @@ fi
 cat <<EOF > /etc/V2bX/config.json
 {
   "Log": { "Level": "error", "Output": "/etc/V2bX/log" },
-  "Cores": [
-    {
-        "Type": "xray",
-        "Log": {
-            "Level": "error",
-            "ErrorPath": "/etc/V2bX/error.log"
-        },
-        "AssetPath": "/etc/V2bX/",
-        "DnsConfigPath": "/etc/V2bX/dns.json",
-        "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
-        "RouteConfigPath": "/etc/V2bX/route.json",
-        "XrayConnectionConfig": {
-            "handshake": 10,
-            "connIdle": 300,
-            "uplinkOnly": 2,
-            "downlinkOnly": 4,
-            "bufferSize": 256
-        }
-    }],
+  "Cores": [ { "Type": "xray", "Log": { "Level": "none" } } ],
   "Nodes": [
     {
       "Core": "xray",
