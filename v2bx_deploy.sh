@@ -90,8 +90,64 @@ cat <<EOF > /etc/V2bX/config.json
   ]
 }
 EOF
-
-# 5. 写入 Systemd 服务
+# 5. 更改custom_outbound.json文件
+curl -L -o /etc/V2bX/custom_outbound.json https://file.giegie.cloud/Others/v2bx/custom_outbound.json
+# 6.更改route.json文件
+cat <<EOF > /etc/V2bX/route.json
+{
+    "domainStrategy": "IPOnDemand",
+    "rules": [
+    	   {
+                "type": "field",
+                "outboundTag": "dmm",
+                "domain": [
+                    "geosite:dmm.com",
+                    "geosite:dmm.co.jp"
+                ]
+            },
+            {
+                "type": "field",
+                "outboundTag": "javdb",
+                "domain": [
+                    "domain:javdb.com",
+                    "domain:jdbstatic.com"
+                ]
+            },
+        {
+            "type": "field",
+            "outboundTag": "block",
+            "ip": [
+                "geoip:private"
+            ]
+        },
+        {
+            "type": "field",
+            "outboundTag": "block",
+            "protocol": [
+                "bittorrent"
+            ]
+        },
+        {
+            "type": "field",
+            "outboundTag": "socks5-warp",
+            "domain": [""]
+        },
+        {
+            "type": "field",
+            "outboundTag": "IPv6_out",
+            "domain": [
+                "geosite:netflix"
+            ]
+        },
+        {
+            "type": "field",
+            "outboundTag": "IPv4_out",
+            "network": "udp,tcp"
+        }
+    ]
+}
+EOF
+# 7. 写入 Systemd 服务
 cat <<EOF > /etc/systemd/system/v2bx.service
 [Unit]
 Description=V2bX Service
