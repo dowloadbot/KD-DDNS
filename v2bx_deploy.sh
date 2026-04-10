@@ -95,24 +95,24 @@ curl -L -o /etc/V2bX/custom_outbound.json https://file.giegie.cloud/Others/v2bx/
 # 6.更改route.json文件
 cat <<EOF > /etc/V2bX/route.json
 {
-    "domainStrategy": "IPOnDemand",
+    "domainStrategy": "IPIfNonMatch", 
     "rules": [
-    	   {
-                "type": "field",
-                "outboundTag": "dmm",
-                "domain": [
-                    "domain:dmm.com",
-                    "domain:dmm.co.jp"
-                ]
-            },
-            {
-                "type": "field",
-                "outboundTag": "javdb",
-                "domain": [
-                    "domain:javdb.com",
-                    "domain:jdbstatic.com"
-                ]
-            },
+        {
+            "type": "field",
+            "outboundTag": "dmm",
+            "domain": [
+                "domain:dmm.com",
+                "domain:dmm.co.jp"
+            ]
+        },
+        {
+            "type": "field",
+            "outboundTag": "javdb",
+            "domain": [
+                "domain:javdb.com",
+                "domain:jdbstatic.com"
+            ]
+        },
         {
             "type": "field",
             "outboundTag": "block",
@@ -129,20 +129,10 @@ cat <<EOF > /etc/V2bX/route.json
         },
         {
             "type": "field",
-            "outboundTag": "socks5-warp",
-            "domain": [""]
-        },
-        {
-            "type": "field",
             "outboundTag": "IPv6_out",
             "domain": [
                 "geosite:netflix"
             ]
-        },
-        {
-            "type": "field",
-            "outboundTag": "IPv4_out",
-            "network": "udp,tcp"
         }
     ]
 }
