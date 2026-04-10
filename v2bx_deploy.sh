@@ -66,8 +66,26 @@ fi
 # 4. 生成配置文件 (Vless)
 cat <<EOF > /etc/V2bX/config.json
 {
-  "Log": { "Level": "info", "Output": "" },
-  "Cores": [ { "Type": "xray", "Log": { "Level": "none" } } ],
+  "Log": { "Level": "error", "Output": "/etc/V2bX/log" },
+  "Cores": [
+    {
+        "Type": "xray",
+        "Log": {
+            "Level": "error",
+            "ErrorPath": "/etc/V2bX/error.log"
+        },
+        "AssetPath": "/etc/V2bX/",
+        "DnsConfigPath": "/etc/V2bX/dns.json",
+        "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
+        "RouteConfigPath": "/etc/V2bX/route.json",
+        "XrayConnectionConfig": {
+            "handshake": 10,
+            "connIdle": 300,
+            "uplinkOnly": 2,
+            "downlinkOnly": 4,
+            "bufferSize": 256
+        }
+    }],
   "Nodes": [
     {
       "Core": "xray",
