@@ -101,8 +101,8 @@ cat <<EOF > /etc/V2bX/route.json
                 "type": "field",
                 "outboundTag": "dmm",
                 "domain": [
-                    "geosite:dmm.com",
-                    "geosite:dmm.co.jp"
+                    "domain:dmm.com",
+                    "domain:dmm.co.jp"
                 ]
             },
             {
