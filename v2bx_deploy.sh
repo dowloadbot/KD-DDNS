@@ -67,7 +67,16 @@ fi
 cat <<EOF > /etc/V2bX/config.json
 {
   "Log": { "Level": "error", "Output": "/etc/V2bX/log" },
-  "Cores": [ { "Type": "xray", "Log": { "Level": "none" } } ],
+  "Cores": [
+    {
+        "Type": "xray",
+        "Log": {
+            "Level": "error",
+            "ErrorPath": "/etc/V2bX/error.log"
+        },
+        "OutboundConfigPath": "/etc/V2bX/custom_outbound.json",
+        "RouteConfigPath": "/etc/V2bX/route.json"
+    }],
   "Nodes": [
     {
       "Core": "xray",
