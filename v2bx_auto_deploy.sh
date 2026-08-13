@@ -10,12 +10,16 @@ readonly RELEASE_BASE="https://github.com/Shannon-x/V2bX/releases/download"
 readonly INSTALL_DIR="/usr/local/V2bX"
 readonly CONFIG_DIR="/etc/V2bX"
 readonly CONFIG_FILE="${CONFIG_DIR}/config.json"
+readonly DNS_FILE="${CONFIG_DIR}/dns.json"
+readonly OUTBOUND_FILE="${CONFIG_DIR}/custom_outbound.json"
+readonly ROUTE_FILE="${CONFIG_DIR}/route.json"
 readonly SERVICE_FILE="/etc/systemd/system/v2bx.service"
 
 ARCHIVE_FILE=""
 PROBE_FILE=""
 CONFIG_TMP=""
 OUTBOUND_TMP=""
+ROUTE_TMP=""
 
 log() {
     printf '[V2bX] %s\n' "$*"
@@ -42,6 +46,9 @@ cleanup() {
     fi
     if [[ -n "${OUTBOUND_TMP}" && -f "${OUTBOUND_TMP}" ]]; then
         rm -f -- "${OUTBOUND_TMP}"
+    fi
+    if [[ -n "${ROUTE_TMP}" && -f "${ROUTE_TMP}" ]]; then
+        rm -f -- "${ROUTE_TMP}"
     fi
 }
 
@@ -279,6 +286,77 @@ install_v2bx() {
     install -m 0644 "${INSTALL_DIR}/geosite.dat" "${CONFIG_DIR}/geosite.dat"
 }
 
+write_route_config() {
+    local netflix_outbound="$1"
+    local has_dmm="$2"
+    local has_javdb="$3"
+
+    ROUTE_TMP="$(mktemp "${CONFIG_DIR}/route.json.tmp.XXXXXX")"
+    jq -n \
+        --arg netflix_outbound "${netflix_outbound}" \
+        --argjson has_dmm "${has_dmm}" \
+        --argjson has_javdb "${has_javdb}" \
+        '{
+          domainStrategy: "IPIfNonMatch",
+          rules: (
+            (if $has_dmm then [{
+              type: "field",
+              outboundTag: "dmm",
+              domain: ["domain:dmm.com", "domain:dmm.co.jp"]
+            }] else [] end) +
+            (if $has_javdb then [{
+              type: "field",
+              outboundTag: "javdb",
+              domain: ["domain:javdb.com", "domain:jdbstatic.com"]
+            }] else [] end) +
+            [
+              {
+                type: "field",
+                outboundTag: "block",
+                ip: ["geoip:private"]
+              },
+              {
+                type: "field",
+                outboundTag: "block",
+                protocol: ["bittorrent"]
+              },
+              {
+                type: "field",
+                outboundTag: $netflix_outbound,
+                domain: ["geosite:netflix"]
+              },
+              {
+                type: "field",
+                outboundTag: "IPv4_out",
+                network: "tcp,udp"
+              }
+            ]
+          )
+        }' >"${ROUTE_TMP}"
+
+    # 交叉校验路由引用的每个 outboundTag，防止服务启动后静默不分流。
+    jq -e --slurpfile outbounds "${OUTBOUND_FILE}" '
+        [.rules[].outboundTag] as $route_tags |
+        [$outbounds[0][].tag] as $outbound_tags |
+        all($route_tags[]; . as $tag | $outbound_tags | index($tag) != null)
+    ' "${ROUTE_TMP}" >/dev/null ||
+        die "route.json 引用了 custom_outbound.json 中不存在的出站标签。"
+
+    if [[ "${has_dmm}" == "true" ]]; then
+        jq -e 'any(.rules[]; .outboundTag == "dmm")' "${ROUTE_TMP}" >/dev/null ||
+            die "未能写入 DMM 分流规则。"
+    fi
+    if [[ "${has_javdb}" == "true" ]]; then
+        jq -e 'any(.rules[]; .outboundTag == "javdb")' "${ROUTE_TMP}" >/dev/null ||
+            die "未能写入 JAVDB 分流规则。"
+    fi
+
+    chmod 0644 "${ROUTE_TMP}"
+    mv -f "${ROUTE_TMP}" "${ROUTE_FILE}"
+    ROUTE_TMP=""
+    log "已重写 ${ROUTE_FILE}（DMM=${has_dmm}, JAVDB=${has_javdb}）"
+}
+
 write_config() {
     local netflix_outbound="IPv4_out"
 
@@ -343,7 +421,7 @@ write_config() {
     mv -f "${CONFIG_TMP}" "${CONFIG_FILE}"
     CONFIG_TMP=""
 
-    cat >"${CONFIG_DIR}/dns.json" <<'EOF'
+    cat >"${DNS_FILE}" <<'EOF'
 {
   "servers": [
     "1.1.1.1",
@@ -393,68 +471,38 @@ EOF
     fi
 
     chmod 0600 "${OUTBOUND_TMP}"
-    mv -f "${OUTBOUND_TMP}" "${CONFIG_DIR}/custom_outbound.json"
+    mv -f "${OUTBOUND_TMP}" "${OUTBOUND_FILE}"
     OUTBOUND_TMP=""
 
     local has_dmm=false
     local has_javdb=false
-    if jq -e 'any(.[]; .tag == "dmm")' "${CONFIG_DIR}/custom_outbound.json" >/dev/null; then
+    if jq -e 'any(.[]; .tag == "dmm")' "${OUTBOUND_FILE}" >/dev/null; then
         has_dmm=true
     fi
-    if jq -e 'any(.[]; .tag == "javdb")' "${CONFIG_DIR}/custom_outbound.json" >/dev/null; then
+    if jq -e 'any(.[]; .tag == "javdb")' "${OUTBOUND_FILE}" >/dev/null; then
         has_javdb=true
     fi
 
-    jq -n \
-        --arg netflix_outbound "${netflix_outbound}" \
-        --argjson has_dmm "${has_dmm}" \
-        --argjson has_javdb "${has_javdb}" \
-        '{
-          domainStrategy: "IPIfNonMatch",
-          rules: (
-            (if $has_dmm then [{
-              type: "field",
-              outboundTag: "dmm",
-              domain: ["domain:dmm.com", "domain:dmm.co.jp"]
-            }] else [] end) +
-            (if $has_javdb then [{
-              type: "field",
-              outboundTag: "javdb",
-              domain: ["domain:javdb.com", "domain:jdbstatic.com"]
-            }] else [] end) +
-            [
-              {
-                type: "field",
-                outboundTag: "block",
-                ip: ["geoip:private"]
-              },
-              {
-                type: "field",
-                outboundTag: "block",
-                protocol: ["bittorrent"]
-              },
-              {
-                type: "field",
-                outboundTag: $netflix_outbound,
-                domain: ["geosite:netflix"]
-              },
-              {
-                type: "field",
-                outboundTag: "IPv4_out",
-                network: "tcp,udp"
-              }
-            ]
-          )
-        }' >"${CONFIG_DIR}/route.json"
+    write_route_config "${netflix_outbound}" "${has_dmm}" "${has_javdb}"
+    if [[ "${has_dmm}" == "true" ]]; then
+        log "DMM 分流：dmm.com、dmm.co.jp -> dmm"
+    else
+        warn "出站配置没有 dmm 标签，未启用 DMM 分流。"
+    fi
+    if [[ "${has_javdb}" == "true" ]]; then
+        log "JAVDB 分流：javdb.com、jdbstatic.com -> javdb"
+    else
+        warn "出站配置没有 javdb 标签，未启用 JAVDB 分流。"
+    fi
 
     chmod 0600 "${CONFIG_FILE}"
-    chmod 0600 "${CONFIG_DIR}/custom_outbound.json"
-    chmod 0644 "${CONFIG_DIR}/dns.json" "${CONFIG_DIR}/route.json"
+    chmod 0600 "${OUTBOUND_FILE}"
+    chmod 0644 "${DNS_FILE}" "${ROUTE_FILE}"
 
     jq -e . "${CONFIG_FILE}" >/dev/null
-    jq -e . "${CONFIG_DIR}/dns.json" >/dev/null
-    jq -e . "${CONFIG_DIR}/custom_outbound.json" >/dev/null
-    jq -e . "${CONFIG_DIR}/route.json" >/dev/null
+    jq -e . "${DNS_FILE}" >/dev/null
+    jq -e . "${OUTBOUND_FILE}" >/dev/null
+    jq -e . "${ROUTE_FILE}" >/dev/null
 }
 
 write_service() {
