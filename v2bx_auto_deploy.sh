@@ -4,8 +4,8 @@ set -Eeuo pipefail
 umask 022
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly DEFAULT_VERSION="v1.1.202607150800"
-readonly RELEASE_API="https://api.github.com/repos/Shannon-x/V2bX/releases/latest"
+readonly DEFAULT_VERSION="v1.1.202608120423"
+readonly RELEASE_API="https://api.github.com/repos/Shannon-x/V2bX/releases"
 readonly RELEASE_BASE="https://github.com/Shannon-x/V2bX/releases/download"
 readonly INSTALL_DIR="/usr/local/V2bX"
 readonly CONFIG_DIR="/etc/V2bX"
@@ -73,7 +73,7 @@ usage() {
 可选参数和环境变量:
   API版本             1（默认，VLESS/VMess 等独立节点）或 2（v2node）
   NODE_TYPE           节点类型，默认 vless
-  V2BX_VERSION        V2bX 版本，默认 latest；查询失败时回退 ${DEFAULT_VERSION}
+  V2BX_VERSION        V2bX 版本，默认 latest；自动跳过缺少当前架构 ZIP 的失败版本
   GITHUB_PROXY_PREFIX GitHub 下载代理前缀，例如 https://ghfast.top/
   CUSTOM_OUTBOUND_FILE
                       仓库外的自定义出站 JSON 文件（推荐 root 所有、权限 600）
@@ -178,7 +178,10 @@ detect_asset_arch() {
 }
 
 resolve_version() {
+    local asset_arch="$1"
+    local asset_name="V2bX-linux-${asset_arch}.zip"
     local release_json=""
+    local latest_tag=""
     local resolved=""
 
     if [[ "${V2BX_VERSION}" != "latest" ]]; then
@@ -192,13 +195,32 @@ resolve_version() {
         --max-time 30 \
         -H "Accept: application/vnd.github+json" \
         -H "User-Agent: v2bx-deploy" \
-        "${RELEASE_API}")"; then
-        resolved="$(jq -r '.tag_name // empty' <<<"${release_json}")"
+        "${RELEASE_API}?per_page=20")"; then
+        latest_tag="$(jq -r '
+            if type == "array" then .[0].tag_name // empty else empty end
+        ' <<<"${release_json}")"
+        resolved="$(jq -r --arg asset "${asset_name}" '
+            if type != "array" then empty
+            else
+              first(
+                .[] |
+                select(.draft == false and .prerelease == false) |
+                select(any(.assets[]?;
+                  .name == $asset and
+                  .state == "uploaded" and
+                  (.size // 0) >= 1000000
+                )) |
+                .tag_name
+              ) // empty
+            end
+        ' <<<"${release_json}")"
     fi
 
     if [[ -z "${resolved}" ]]; then
-        warn "无法查询 GitHub 最新版本（可能被限流或网络受限），回退到 ${DEFAULT_VERSION}。"
+        warn "最近的 Release 中未找到 ${asset_name}，回退到已知可用版本 ${DEFAULT_VERSION}。"
         resolved="${DEFAULT_VERSION}"
+    elif [[ -n "${latest_tag}" && "${latest_tag}" != "${resolved}" ]]; then
+        warn "最新版本 ${latest_tag} 缺少 ${asset_name}，自动回退到 ${resolved}。"
     fi
     printf '%s' "${resolved}"
 }
@@ -550,7 +572,7 @@ main() {
     install_packages
     probe_panel
     asset_arch="$(detect_asset_arch)"
-    resolved_version="$(resolve_version)"
+    resolved_version="$(resolve_version "${asset_arch}")"
     install_v2bx "${asset_arch}" "${resolved_version}"
     write_config
     write_service
