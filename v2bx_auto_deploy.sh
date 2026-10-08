@@ -4,8 +4,7 @@ set -Eeuo pipefail
 umask 022
 
 readonly SCRIPT_NAME="${0##*/}"
-readonly DEFAULT_VERSION="v1.1.202608120423"
-readonly RELEASE_API="https://api.github.com/repos/Shannon-x/V2bX/releases"
+readonly V2BX_VERSION="v1.1.202609251427"
 readonly RELEASE_BASE="https://github.com/Shannon-x/V2bX/releases/download"
 readonly INSTALL_DIR="/usr/local/V2bX"
 readonly CONFIG_DIR="/etc/V2bX"
@@ -14,12 +13,24 @@ readonly DNS_FILE="${CONFIG_DIR}/dns.json"
 readonly OUTBOUND_FILE="${CONFIG_DIR}/custom_outbound.json"
 readonly ROUTE_FILE="${CONFIG_DIR}/route.json"
 readonly SERVICE_FILE="/etc/systemd/system/v2bx.service"
+readonly NOTIFY_CONFIG_FILE="${V2BX_NOTIFY_FILE:-/root/v2bx-notify.conf}"
 
 ARCHIVE_FILE=""
 PROBE_FILE=""
 CONFIG_TMP=""
 OUTBOUND_TMP=""
 ROUTE_TMP=""
+CURRENT_STEP="初始化"
+LAST_ERROR=""
+SMTP_HOST="${SMTP_HOST:-}"
+SMTP_PORT="${SMTP_PORT:-465}"
+SMTP_USER="${SMTP_USER:-}"
+SMTP_PASSWORD="${SMTP_PASSWORD:-${SMTP_PASS:-}}"
+SMTP_FROM="${SMTP_FROM:-${SMTP_USER}}"
+SMTP_TO="${SMTP_TO:-}"
+SMTP_SECURITY="${SMTP_SECURITY:-smtps}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${TELEGRAM_ID:-}}"
 
 log() {
     printf '[V2bX] %s\n' "$*"
@@ -30,8 +41,174 @@ warn() {
 }
 
 die() {
+    LAST_ERROR="$*"
     printf '[V2bX] 错误: %s\n' "$*" >&2
     exit 1
+}
+
+load_notification_config() {
+    local file_mode
+
+    if [[ -r "${NOTIFY_CONFIG_FILE}" ]]; then
+        file_mode="$(stat -c '%a' "${NOTIFY_CONFIG_FILE}")"
+        if (( (8#${file_mode} & 077) != 0 )); then
+            warn "通知配置权限为 ${file_mode}，建议执行: chmod 600 '${NOTIFY_CONFIG_FILE}'"
+        fi
+        # shellcheck disable=SC1090
+        source "${NOTIFY_CONFIG_FILE}"
+        log "已载入失败通知配置 ${NOTIFY_CONFIG_FILE}"
+    fi
+
+    SMTP_HOST="${SMTP_HOST:-}"
+    SMTP_PORT="${SMTP_PORT:-465}"
+    SMTP_USER="${SMTP_USER:-}"
+    SMTP_PASSWORD="${SMTP_PASSWORD:-${SMTP_PASS:-}}"
+    SMTP_FROM="${SMTP_FROM:-${SMTP_USER}}"
+    SMTP_TO="${SMTP_TO:-}"
+    SMTP_SECURITY="${SMTP_SECURITY:-smtps}"
+    TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+    TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-${TELEGRAM_ID:-}}"
+}
+
+build_failure_message() {
+    local status="$1"
+    local host_name
+    local failure_time
+
+    host_name="$(hostname 2>/dev/null || printf 'unknown')"
+    failure_time="$(date '+%Y-%m-%d %H:%M:%S %z')"
+    cat <<EOF
+V2bX 自动对接失败
+
+时间: ${failure_time}
+主机: ${host_name}
+面板: ${PANEL_URL:-尚未读取}
+节点 ID: ${NODE_ID:-尚未读取}
+当前步骤: ${CURRENT_STEP}
+退出码: ${status}
+错误: ${LAST_ERROR:-未知错误，请查看 systemd/开机日志}
+EOF
+}
+
+curl_config_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/}"
+    printf '"%s"' "${value}"
+}
+
+send_smtp_notification() {
+    local message="$1"
+    local smtp_url
+    local message_file
+    local config_file
+    local curl_status
+
+    case "${SMTP_SECURITY,,}" in
+        smtps|ssl)
+            smtp_url="smtps://${SMTP_HOST}:${SMTP_PORT}"
+            ;;
+        starttls|tls)
+            smtp_url="smtp://${SMTP_HOST}:${SMTP_PORT}"
+            ;;
+        none|plain)
+            smtp_url="smtp://${SMTP_HOST}:${SMTP_PORT}"
+            ;;
+        *)
+            warn "不支持 SMTP_SECURITY=${SMTP_SECURITY}，请使用 smtps、starttls 或 none。"
+            return 1
+            ;;
+    esac
+
+    message_file="$(mktemp)"
+    config_file="$(mktemp)"
+    chmod 0600 "${message_file}" "${config_file}"
+    {
+        printf 'From: %s\r\n' "${SMTP_FROM}"
+        printf 'To: %s\r\n' "${SMTP_TO}"
+        printf 'Subject: [V2bX] deployment failed on %s\r\n' "$(hostname 2>/dev/null || printf 'unknown')"
+        printf 'Date: %s\r\n' "$(date -R)"
+        printf 'Content-Type: text/plain; charset=UTF-8\r\n'
+        printf 'Content-Transfer-Encoding: 8bit\r\n\r\n'
+        printf '%s\r\n' "${message}"
+    } >"${message_file}"
+    {
+        printf 'url = '; curl_config_quote "${smtp_url}"; printf '\n'
+        printf 'user = '; curl_config_quote "${SMTP_USER}:${SMTP_PASSWORD}"; printf '\n'
+        printf 'mail-from = '; curl_config_quote "${SMTP_FROM}"; printf '\n'
+        printf 'mail-rcpt = '; curl_config_quote "${SMTP_TO}"; printf '\n'
+        printf 'upload-file = '; curl_config_quote "${message_file}"; printf '\n'
+        printf 'fail\nsilent\nshow-error\nconnect-timeout = 15\nmax-time = 45\n'
+        if [[ "${SMTP_SECURITY,,}" != "none" && "${SMTP_SECURITY,,}" != "plain" ]]; then
+            printf 'ssl-reqd\n'
+        fi
+    } >"${config_file}"
+
+    curl --config "${config_file}"
+    curl_status=$?
+    rm -f -- "${config_file}"
+    rm -f -- "${message_file}"
+    return "${curl_status}"
+}
+
+send_telegram_notification() {
+    local message="$1"
+    local config_file
+    local curl_status
+
+    config_file="$(mktemp)"
+    chmod 0600 "${config_file}"
+    {
+        printf 'url = '
+        curl_config_quote "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage"
+        printf '\nrequest = "POST"\nfail\nsilent\nshow-error\nconnect-timeout = 15\nmax-time = 30\n'
+    } >"${config_file}"
+
+    curl --config "${config_file}" \
+        --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=${message}" >/dev/null
+    curl_status=$?
+    rm -f -- "${config_file}"
+    return "${curl_status}"
+}
+
+send_failure_notifications() {
+    local status="$1"
+    local message
+
+    if [[ -z "${SMTP_HOST}${SMTP_USER}${SMTP_PASSWORD}${SMTP_TO}${TELEGRAM_BOT_TOKEN}${TELEGRAM_CHAT_ID}" ]]; then
+        return
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        warn "系统没有 curl，无法发送失败通知。"
+        return
+    fi
+
+    message="$(build_failure_message "${status}")"
+
+    if [[ -n "${SMTP_HOST}" && -n "${SMTP_USER}" && -n "${SMTP_PASSWORD}" &&
+          -n "${SMTP_FROM}" && -n "${SMTP_TO}" ]]; then
+        if send_smtp_notification "${message}"; then
+            log "失败通知邮件已发送到 ${SMTP_TO}"
+        else
+            warn "SMTP 失败通知发送失败。"
+        fi
+    elif [[ -n "${SMTP_HOST}${SMTP_USER}${SMTP_PASSWORD}${SMTP_TO}" ]]; then
+        warn "SMTP 配置不完整，未发送邮件。"
+    fi
+
+    if [[ -n "${TELEGRAM_BOT_TOKEN}" && -n "${TELEGRAM_CHAT_ID}" ]]; then
+        if send_telegram_notification "${message}"; then
+            log "Telegram 失败通知已发送。"
+        else
+            warn "Telegram 失败通知发送失败。"
+        fi
+    elif [[ -n "${TELEGRAM_BOT_TOKEN}${TELEGRAM_CHAT_ID}" ]]; then
+        warn "Telegram 配置不完整，未发送消息。"
+    fi
 }
 
 cleanup() {
@@ -52,14 +229,27 @@ cleanup() {
     fi
 }
 
+on_exit() {
+    local status="$1"
+
+    trap - ERR EXIT
+    set +e
+    cleanup
+    if (( status != 0 )); then
+        send_failure_notifications "${status}"
+    fi
+    exit "${status}"
+}
+
 on_error() {
     local line="$1"
     local code="$2"
+    LAST_ERROR="第 ${line} 行执行失败（退出码 ${code}）"
     printf '[V2bX] 错误: 第 %s 行执行失败（退出码 %s）。\n' "${line}" "${code}" >&2
     exit "${code}"
 }
 
-trap cleanup EXIT
+trap 'on_exit "$?"' EXIT
 trap 'on_error "${LINENO}" "$?"' ERR
 
 usage() {
@@ -70,19 +260,27 @@ usage() {
 示例:
   sudo ./${SCRIPT_NAME} "https://dashboard.example.com" "uuid" 12
 
+固定内核版本: ${V2BX_VERSION}（不查询最新版，不自动切换版本）
+
 可选参数和环境变量:
   API版本             1（默认，VLESS/VMess 等独立节点）或 2（v2node）
   NODE_TYPE           节点类型，默认 vless
-  V2BX_VERSION        V2bX 版本，默认 latest；自动跳过缺少当前架构 ZIP 的失败版本
   GITHUB_PROXY_PREFIX GitHub 下载代理前缀，例如 https://ghfast.top/
   CUSTOM_OUTBOUND_FILE
                       仓库外的自定义出站 JSON 文件（推荐 root 所有、权限 600）
+  V2BX_NOTIFY_FILE    失败通知配置文件，默认 /root/v2bx-notify.conf
+
+失败通知:
+  SMTP 和 Telegram 均为可选；配置完整的渠道会在部署失败时自动发送。
+  通知内容不包含面板通信密钥、SMTP 密码或出站节点密码。
 
 无交互开机脚本示例:
   sudo env CUSTOM_OUTBOUND_FILE=/root/v2bx-outbound.json \\
     ./${SCRIPT_NAME} "https://dashboard.example.com" "uuid" 12
 EOF
 }
+
+load_notification_config
 
 [[ "${EUID}" -eq 0 ]] || die "必须使用 root 用户运行（请在命令前加 sudo）。"
 if (( $# < 3 || $# > 4 )); then
@@ -95,7 +293,6 @@ PANEL_KEY="$2"
 NODE_ID="$3"
 API_VERSION="${4:-${API_VERSION:-1}}"
 NODE_TYPE="${NODE_TYPE:-vless}"
-V2BX_VERSION="${V2BX_VERSION:-latest}"
 GITHUB_PROXY_PREFIX="${GITHUB_PROXY_PREFIX:-}"
 CUSTOM_OUTBOUND_FILE="${CUSTOM_OUTBOUND_FILE:-}"
 
@@ -175,54 +372,6 @@ detect_asset_arch() {
             die "V2bX 没有适配当前 CPU 架构的自动映射: $(uname -m)"
             ;;
     esac
-}
-
-resolve_version() {
-    local asset_arch="$1"
-    local asset_name="V2bX-linux-${asset_arch}.zip"
-    local release_json=""
-    local latest_tag=""
-    local resolved=""
-
-    if [[ "${V2BX_VERSION}" != "latest" ]]; then
-        printf '%s' "${V2BX_VERSION}"
-        return
-    fi
-
-    if release_json="$(curl -fsSL \
-        --retry 3 \
-        --connect-timeout 10 \
-        --max-time 30 \
-        -H "Accept: application/vnd.github+json" \
-        -H "User-Agent: v2bx-deploy" \
-        "${RELEASE_API}?per_page=20")"; then
-        latest_tag="$(jq -r '
-            if type == "array" then .[0].tag_name // empty else empty end
-        ' <<<"${release_json}")"
-        resolved="$(jq -r --arg asset "${asset_name}" '
-            if type != "array" then empty
-            else
-              first(
-                .[] |
-                select(.draft == false and .prerelease == false) |
-                select(any(.assets[]?;
-                  .name == $asset and
-                  .state == "uploaded" and
-                  (.size // 0) >= 1000000
-                )) |
-                .tag_name
-              ) // empty
-            end
-        ' <<<"${release_json}")"
-    fi
-
-    if [[ -z "${resolved}" ]]; then
-        warn "最近的 Release 中未找到 ${asset_name}，回退到已知可用版本 ${DEFAULT_VERSION}。"
-        resolved="${DEFAULT_VERSION}"
-    elif [[ -n "${latest_tag}" && "${latest_tag}" != "${resolved}" ]]; then
-        warn "最新版本 ${latest_tag} 缺少 ${asset_name}，自动回退到 ${resolved}。"
-    fi
-    printf '%s' "${resolved}"
 }
 
 probe_panel() {
@@ -567,18 +716,23 @@ EOF
 
 main() {
     local asset_arch
-    local resolved_version
 
+    CURRENT_STEP="安装系统依赖"
     install_packages
+    CURRENT_STEP="检查面板 API"
     probe_panel
+    CURRENT_STEP="检测 CPU 架构"
     asset_arch="$(detect_asset_arch)"
-    resolved_version="$(resolve_version "${asset_arch}")"
-    install_v2bx "${asset_arch}" "${resolved_version}"
+    CURRENT_STEP="下载并安装 V2bX ${V2BX_VERSION}"
+    install_v2bx "${asset_arch}" "${V2BX_VERSION}"
+    CURRENT_STEP="生成出站和路由配置"
     write_config
+    CURRENT_STEP="启动 V2bX 服务"
     write_service
+    CURRENT_STEP="部署完成"
 
     printf '\n'
-    log "部署完成：V2bX ${resolved_version} 已运行"
+    log "部署完成：V2bX ${V2BX_VERSION} 已运行"
     log "系统架构：$(uname -m)（发行包 ${asset_arch}）"
     log "面板接口：API v${API_VERSION} / ${NODE_TYPE} / 节点 ${NODE_ID}"
     if [[ -n "${PANEL_PORT:-}" ]]; then
